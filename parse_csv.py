@@ -50,7 +50,8 @@ def parse_file(stream):
                 schemabuf.append(line)
                 if len(schemabuf) == 2:
                     # reconstruct schema from two rows
-                    schema = [''.join(pair).strip().replace(' ', '_').replace('/', 'p')
+                    schema = [(''.join(pair).strip()
+                                 .replace(' ', '_').replace('/', 'p'))
                               if pair != ('','') else 'Name'
                               for pair in
                               zip(*map(splitfields, schemabuf))]
@@ -77,6 +78,10 @@ def main():
         for row in year2data[year]:
             name = row['Name']
             team = row['Tm']
+            def same_team(yti):
+                return yti[0] < year and yti[1] == team
+            def doppelganger(yti):
+                return yti[0] == year and yti[1] != team
             if name not in name2yearteamid:
                 name2yearteamid[name] = [(year, team, maxid)]
                 row['id'] = maxid
@@ -86,12 +91,8 @@ def main():
                 yearteamids = name2yearteamid[name]
                 # Is there a player with the same name and team in a previous year?
                 # If so, update the last-seen year to this year and set the id.
-                if (sum(1 for yti in yearteamids if
-                        yti[0] < year and
-                        yti[1] == team) == 1):
-                    yti = next(yti for yti in yearteamids if
-                               yti[0] < year and
-                               yti[1] == team)
+                if (len(filter(same_team, yearteamids)) == 1):
+                    yti = next(filter(same_team, yearteamids))
                     del yearteamids[yearteamids.index(yti)]
                     yearteamids.append((year, team, yti[2]))
                     row['id'] = yti[2]
@@ -99,9 +100,8 @@ def main():
                          (name, team, yti[0], year, name2yearteamid[name]))
                 # Is there exactly one other player with the same name this year?
                 # Adrian Peterson and Steve Smith have players with the same name.
-                elif (len(yearteamids) == 1 and
-                    yearteamids[0][0] == year and
-                    yearteamids[0][1] != team):
+                elif (len(filter(doppelganger, yearteamids)) == 1
+                      and len(yearteamids) == 1):
                     # Duplicate-name player
                     info('Creating new player for %s (%s, %d). Already saw '
                          '%s on %s in %d.' %
