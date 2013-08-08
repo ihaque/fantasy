@@ -18,6 +18,7 @@ SPECIAL_CASE_TRADES = {
 
 
 def score(row):
+    """(Approximate) scoring function for my league"""
     coefs = {
         'PassingYds': 1.0/50,
         'PassingTD': 6,
@@ -32,16 +33,16 @@ def score(row):
     return sum(row[key] * coef for key, coef in coefs.iteritems())
 
 
-def splitfields(line, sep=','):
-    return [x.strip() for x in line.split(sep)]
-
-
 def parse_file(stream):
+    """Parse CSV fantasy data from http://www.pro-football-reference.com/"""
     datarx = re.compile('^[0-9]')
     numrx = re.compile('^-?[0-9]+$')
 
     def is_numeric(s):
         return numrx.match(s)
+
+    def splitfields(line, sep=','):
+        return [x.strip() for x in line.split(sep)]
 
     schema = None
     schemabuf = []
@@ -66,21 +67,36 @@ def parse_file(stream):
             rows.append({key: (float(val) if is_numeric(val) else val)
                          for key, val in zip(schema, fields)})
 
+    print schema
     return rows
 
 
-def main():
-    years = range(2008, 2013)
-    # Parse all files
-    year2data = {}
-    for year in years:
-        with open('fant%d.csv' % year, 'r') as stream:
-            year2data[year] = parse_file(stream)
+def assign_ids(year2data, special_case_trades={}):
+    """Attempt to identify unique players and assign each a primary key.
 
-    assign_ids(year2data)
+    Looks at the list of player stats for each year and attempts to:
+        1. Identify unique players in each year
+        2. Track players across years
+    in order to assign each player a primary key that follows them in time.
 
+    Can handle multiple players in the same season with the same name, and can
+    follow trades (if position stays constant) and position changes (if team
+    stays constant). Some trades are ambiguous, and can be special-cased
+    with the `special_case_trades` parameter:
 
-def assign_ids(year2data):
+        { (Name, NewTeam, NewYear): (Name, OldTeam, OldYear)}
+
+    For example:
+        ('Zach Miller', 'SEA', 2011): ('Zach Miller', 'OAK', 2010)
+
+    Represents a trade of Zach Miller from OAK in 2010 to SEA in 2011. This
+    is needed because there was also a Zach Miller in JAX in 2010, so without
+    the special case, it's hard to tell which one got traded to SEA. (Both are
+    TEs.) It could be done by looking at all the rows in this year to see
+    if one of them stayed put (ZM on JAX did), but the parser here does not
+    consider all of that context -- it may not have seen the JAX row when it
+    encounters the SEA row.
+    """
     _playerkey = namedtuple(
         '_playerkey',
         ('year', 'team', 'id', 'name', 'position'))
@@ -173,8 +189,8 @@ def assign_ids(year2data):
                     update_last_seen_and_row(key)
 
                 # Special-cased trades.
-                elif ((name, team, year) in SPECIAL_CASE_TRADES):
-                    source_nty = SPECIAL_CASE_TRADES[name, team, year]
+                elif ((name, team, year) in special_case_trades):
+                    source_nty = special_case_trades[name, team, year]
                     # name is implicitly equal
                     key = next(key for key in keys if
                                key.team == source_nty[1] and
@@ -194,7 +210,89 @@ def assign_ids(year2data):
                 else:
                     error('could not assign %d %s %s %s %s' %
                           (year, name, team, position, keys))
+            assert 'id' in row, str(row)
     return
+
+
+def featurize(year2stats):
+    """Construct a feature dictionary from the year-on-year stats for a player.
+
+    Because different players have played for different lengths of time in
+    the league (everyone from rookies, who will have had only one year of
+    experience, to veterans, who will have as much experience as we have years
+    in the database), it's not useful to just tag features with a particular
+    year. It's probably most useful to tag stat features with a delta time
+    from the current year (prev, prev-1, etc.) so that younger players just
+    end up with a sparse feature vector.
+
+    Some features (age, position) should just be taken from the last year
+    and don't need to be replicated across years.
+    """
+    # Stats that are just taken directly from last year's stats
+    FIXED_STATS = [('age', 'Age'), ('position', 'FantasyFantPos')]
+
+    # Stats that should be replicated by year
+    TRACKED_STATS = [
+        ('games_played', 'G'),
+        ('games_started', 'GS'),
+        ('completions', 'PassingCmp'),
+        ('pass_attempts', 'PassingAtt'),
+        ('pass_yards', 'PassingYds'),
+        ('pass_tds', 'PassingTD'),
+        ('interceptions', 'PassingInt'),
+        ('rush_attempts', 'RushingAtt'),
+        ('rush_yards', 'RushingYds'),
+        ('rush_tds', 'RushingTD'),
+        ('rec_receptions', 'ReceivingRec'),
+        ('rec_yards', 'ReceivingYds'),
+        ('rec_tds', 'ReceivingTD'),
+    ]
+    # Stats that should be replicated, but are functions of the entire stats
+    TRACKED_COMPUTED_STATS = [
+        ('fantasy_points', score),
+    ]
+
+    # Computed stats are strictly more powerful than directly copied stats,
+    # but the latter are more convenient to specify, so I implement the
+    # latter in terms of the former.
+    def stat_factory(key):
+        return lambda row: row[key]
+
+    TRACKED_COMPUTED_STATS.extend(
+        (feature_key, stat_factory(row_key))
+        for feature_key, row_key in TRACKED_STATS)
+
+    years = sorted(year2stats, reverse=True)
+    last_year_stats = year2stats[years[0]]
+    features = {}
+    for feat_key, row_key in FIXED_STATS:
+        features[feat_key] = last_year_stats[row_key]
+    for year_idx, year in enumerate(years):
+        year_delta = year_idx + 1
+        stats = year2stats[year]
+        for feat_key, fn in TRACKED_COMPUTED_STATS:
+            features['%s_%d' % (feat_key, year_delta)] = fn(stats)
+
+    return features
+
+
+def main():
+    years = range(2008, 2013)
+    # Parse all files
+    year2data = {}
+    for year in years:
+        with open('fant%d.csv' % year, 'r') as stream:
+            year2data[year] = parse_file(stream)
+
+    assign_ids(year2data, SPECIAL_CASE_TRADES)
+    # Transpose to get years by player
+    id2year2stats = {}
+    for year, data in year2data.iteritems():
+        for datum in data:
+            year2stats = id2year2stats.setdefault(datum['id'], {})
+            year2stats[year] = datum
+    print id2year2stats[0]
+    print featurize(id2year2stats[0])
 
 
 if __name__ == '__main__':
