@@ -1,9 +1,13 @@
 import re
 import logging
 from collections import namedtuple
+from scipy.sparse import dok_matrix, csr_matrix
+from scipy.sparse import hstack as sparse_hstack
+from sklearn import linear_model
+import numpy
+from operator import itemgetter
 
-
-logging.getLogger().setLevel(logging.INFO)
+logging.getLogger().setLevel(logging.ERROR)
 debug = logging.debug
 info = logging.info
 warning = logging.warning
@@ -16,6 +20,9 @@ SPECIAL_CASE_TRADES = {
     ('Zach Miller', 'SEA', 2011): ('Zach Miller', 'OAK', 2010)
 }
 
+
+def string_safe(st):
+    return st if st else 0
 
 def score(row):
     """(Approximate) scoring function for my league"""
@@ -30,7 +37,11 @@ def score(row):
         'ReceivingTD': 6,
         # Missing return TD, 2PC, Fumbles, FumRet
     }
-    return sum(row[key] * coef for key, coef in coefs.iteritems())
+    try:
+        return sum((row[key] * coef if row[key] else 0) for key, coef in coefs.iteritems())
+    except:
+        print [(key, row[key]) for key in coefs]
+        raise
 
 
 def parse_file(stream):
@@ -67,7 +78,6 @@ def parse_file(stream):
             rows.append({key: (float(val) if is_numeric(val) else val)
                          for key, val in zip(schema, fields)})
 
-    print schema
     return rows
 
 
@@ -214,7 +224,7 @@ def assign_ids(year2data, special_case_trades={}):
     return
 
 
-def featurize(year2stats):
+def featurize(year2stats, id=None):
     """Construct a feature dictionary from the year-on-year stats for a player.
 
     Because different players have played for different lengths of time in
@@ -256,7 +266,7 @@ def featurize(year2stats):
     # but the latter are more convenient to specify, so I implement the
     # latter in terms of the former.
     def stat_factory(key):
-        return lambda row: row[key]
+        return lambda row: string_safe(row[key])
 
     TRACKED_COMPUTED_STATS.extend(
         (feature_key, stat_factory(row_key))
@@ -266,15 +276,80 @@ def featurize(year2stats):
     last_year_stats = year2stats[years[0]]
     features = {}
     for feat_key, row_key in FIXED_STATS:
-        features[feat_key] = last_year_stats[row_key]
+        features[feat_key] = string_safe(last_year_stats[row_key])
     for year_idx, year in enumerate(years):
         year_delta = year_idx + 1
         stats = year2stats[year]
         for feat_key, fn in TRACKED_COMPUTED_STATS:
             features['%s_%d' % (feat_key, year_delta)] = fn(stats)
 
+    if id is not None:
+        features['id'] = id
+
     return features
 
+
+def construct_feature_matrix(id2year2stats):
+    rows = [featurize(year2stats, id) for id, year2stats in
+            sorted(id2year2stats.iteritems())]
+    keys = sorted({key for row in rows for key in row})
+    positions = sorted({row['position'] for row in rows})
+    key2idx = {key: idx for idx, key in enumerate(keys)}
+    #X = dok_matrix((len(rows), len(key2idx)))
+    X = numpy.zeros((len(rows), len(key2idx)))
+    print X.shape
+    for i, row in enumerate(rows):
+        for key in row:
+            if key == 'position':
+                X[i, key2idx[key]] = positions.index(row[key])
+            else:
+                try:
+                    X[i, key2idx[key]] = row[key]
+                except:
+                    print key
+                    print row
+                    raise
+    return X, key2idx
+
+
+def select_columns(matrix, keyidxs):
+    submatrix = dok_matrix((matrix.shape[0], len(keyidxs)))
+    columns = [matrix[:, idx].reshape(matrix.shape[0], 1) for idx in keyidxs]
+    #return sparse_hstack(columns)
+    return numpy.hstack(columns)
+
+
+def predict(id2year2stats, feature_matrix, key2idx, features, model):
+    indices = [key2idx[key] for key in features]
+    X = select_columns(feature_matrix, indices)
+    y = select_columns(feature_matrix, [key2idx['fantasy_points_1']])
+
+    model.fit(X, y)
+    y_pred = model.predict(X)
+    id_idx = key2idx['id']
+    predictions = []
+    for row in xrange(y_pred.shape[0]):
+        id = feature_matrix[row, id_idx]
+        year2stats = id2year2stats[id]
+        years = sorted(year2stats)
+        name = year2stats[years[-1]]['Name']
+        team = year2stats[years[-1]]['Tm']
+        position = year2stats[years[-1]]['FantasyFantPos']
+        predictions.append((name, position, team, y_pred[row], y[row]))
+
+    return predictions
+
+def position_ranking_lists(predictions):
+    positions = sorted({pos for name, pos, team, yp, y in predictions})
+    for position in positions:
+        rows = [pred for pred in predictions if pred[1] == position]
+        by_pred = sorted(rows, key=itemgetter(3), reverse=True)
+        by_actual = sorted(rows, key=itemgetter(4), reverse=True)
+        print
+        print "==== %s ====" % position
+        for idx, (bp, ba) in enumerate(zip(by_pred[:50], by_actual[:50])):
+            print "%03d % 25s %.2f   %.2f % 25s" % (
+                idx + 1, bp[0], bp[3], ba[4], ba[0])
 
 def main():
     years = range(2008, 2013)
@@ -291,9 +366,14 @@ def main():
         for datum in data:
             year2stats = id2year2stats.setdefault(datum['id'], {})
             year2stats[year] = datum
-    print id2year2stats[0]
-    print featurize(id2year2stats[0])
 
+    feature_matrix, key2idx = construct_feature_matrix(id2year2stats)
+    features = [key for key in key2idx if
+                key != 'id' and  not key.endswith('_1')]
+
+    predictions = predict(id2year2stats, feature_matrix, key2idx, features,
+                          linear_model.Lasso(max_iter=100000))
+    position_ranking_lists(predictions)
 
 if __name__ == '__main__':
     main()
