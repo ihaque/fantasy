@@ -5,7 +5,7 @@ from logging import error
 from logging import info
 
 
-def _parse_file(stream):
+def _parse_file(filename):
     """Parse CSV fantasy data from http://www.pro-football-reference.com/"""
     datarx = re.compile('^[0-9]')
     numrx = re.compile('^-?[0-9]+$')
@@ -19,25 +19,26 @@ def _parse_file(stream):
     schema = None
     schemabuf = []
     rows = []
-    for line in stream:
-        line = line.strip()
-        if not datarx.match(line):
-            if schema:
-                continue
+    with open(filename, 'r') as stream:
+        for line in stream:
+            line = line.strip()
+            if not datarx.match(line):
+                if schema:
+                    continue
+                else:
+                    schemabuf.append(line)
+                    if len(schemabuf) == 2:
+                        # reconstruct schema from two rows
+                        schema = [(''.join(pair).strip()
+                                     .replace(' ', '_').replace('/', 'p'))
+                                  if pair != ('', '') else 'Name'
+                                  for pair in
+                                  zip(*map(splitfields, schemabuf))]
             else:
-                schemabuf.append(line)
-                if len(schemabuf) == 2:
-                    # reconstruct schema from two rows
-                    schema = [(''.join(pair).strip()
-                                 .replace(' ', '_').replace('/', 'p'))
-                              if pair != ('', '') else 'Name'
-                              for pair in
-                              zip(*map(splitfields, schemabuf))]
-        else:
-            assert schema is not None
-            fields = line.replace('*', '').replace('+', '').split(',')
-            rows.append({key: (float(val) if is_numeric(val) else val)
-                         for key, val in zip(schema, fields)})
+                assert schema is not None
+                fields = line.replace('*', '').replace('+', '').split(',')
+                rows.append({key: (float(val) if is_numeric(val) else val)
+                             for key, val in zip(schema, fields)})
 
     return rows
 
