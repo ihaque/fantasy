@@ -36,7 +36,7 @@ def isPosition(position):
 
 def stat_factory(key):
     def accessor(row):
-        return string_safe(row[key])
+        return nan if row[key] == "" else row[key]
     return accessor
 
 
@@ -67,10 +67,6 @@ TRACKED_STATS = [
     ('rec_tds', stat_factory('ReceivingTD')),
     ('fantasy_points', score),
 ]
-
-
-def string_safe(st):
-    return nan if st == "" else st
 
 
 def featurize_player(year2stats, id=None):
@@ -190,17 +186,15 @@ def construct_feature_matrix(id2year2stats):
 
     identifier_names = sorted(identifier_names)
     col2feature = sorted(feature_names)
-    matrix = empty((len(split_dicts), len(feature_names)))
-    identifiers = []
-    # By default, everything is missing data
-    matrix[:, :] = nan
     feature2col = {feature: idx for idx, feature in
                    enumerate(col2feature)}
+
+    # By default, everything is a missing data point. Impute them away later.
+    matrix = empty((len(split_dicts), len(feature_names)))
+    matrix[:, :] = nan
+    identifiers = []
+
     for row, instance in enumerate(split_dicts):
-        if instance['id'] == 1:
-            print
-            print instance
-            print
         identifiers.append(
             {ident: instance[ident] for ident in identifier_names})
         for feature in set(instance) & feature_names:
