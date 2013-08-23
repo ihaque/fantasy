@@ -1,7 +1,6 @@
 import logging
-from sklearn import linear_model
-import numpy
-from operator import itemgetter
+
+from scipy.stats import kendalltau
 
 from parser import load_files
 from prediction import construct_feature_matrix
@@ -13,6 +12,9 @@ debug = logging.debug
 info = logging.info
 warning = logging.warning
 error = logging.error
+
+TOP_N = 50
+BASE_YEAR = 2013
 
 # The logic should handle most trades properly, but in cases where there are
 # two players with the same name in a previous year, it's hard to tell which
@@ -37,7 +39,7 @@ def position_ranking_lists(identifiers, scores, id2name):
                         if (id2name[ident[ID]][2] == position and
                             ident[DELTA] == delta)]
 
-            names = [id2name[ident[ID]][:2] for ident
+            names = [id2name[ident[ID]][:2] + (ident[ID],) for ident
                      in select_rows(identifiers, pos_idxs)]
             pos_scores = select_rows(scores, pos_idxs)
             pos2list[position] = sorted(zip(pos_scores, names),
@@ -46,27 +48,73 @@ def position_ranking_lists(identifiers, scores, id2name):
     return delta2pos2list
 
 
+def kendall_tau(position_scores, position_predictions, topN=TOP_N):
+    """
+    Each arg has form [(score, (name, team, id))].
+
+    Extract IDs from each, find intersection, remap to unique IDs in [0,N), and
+    use scipy.
+    """
+
+    def get_ids(score_list):
+        return [id for score, (name, team, id) in score_list[:topN]]
+
+    true_ids = get_ids(position_scores)
+    pred_ids = get_ids(position_predictions)
+    shared = set(true_ids) & set(pred_ids)
+    frac_shared = float(len(shared)) / topN
+
+    def get_scores(score_list):
+        # Sort to ensure same order among lists
+        idscore = sorted([(id, score) for score, (name, team, id)
+                          in score_list if id in shared])
+        return [score for id, score in idscore]
+    true_scores = get_scores(position_scores)
+    pred_scores = get_scores(position_predictions)
+
+    return kendalltau(true_scores, pred_scores), frac_shared
+
+
 def pos_rank_row_to_str(row):
     score = '% 6s' % ('%.2f' % row[0])
-    name = '% 25s (% 3s)' % row[1]
+    name = '% 25s (% 3s)' % row[1][:2]
     return '%s %s' % (score, name)
 
 
-def compare_predictions(delta2pos2scores, delta2pos2preds, topN=100,
-                        base_year=2013):
+def compare_predictions(delta2pos2scores, delta2pos2preds, topN=TOP_N,
+                        base_year=BASE_YEAR):
     for delta in delta2pos2scores:
         pos2scores = delta2pos2scores[delta]
         pos2preds = delta2pos2preds[delta]
         year = base_year - delta
         for position in sorted(pos2scores):
+            (tau, pval), frac_shared = kendall_tau(pos2scores[position],
+                                                   pos2preds[position])
             print
-            print '=============== %s (%d) ==============' % (position, year)
+            print '=================== %s (%d) ==================' % \
+                (position, year)
+            print 'Kendall Tau: %f (p=%f), %.2f%% shared' % (tau, pval,
+                                                             100 * frac_shared)
             print '% 32s\t% 32s' % ('Predicted', 'True')
             for i, (true, pred) in (
                 enumerate(zip(pos2preds[position],
                               pos2scores[position])[:topN])):
                 print '% 3d' % (i + 1),
                 print '%s\t%s' % tuple(map(pos_rank_row_to_str, [true, pred]))
+            print
+
+
+def dump_predictions(delta2pos2preds, topN=TOP_N, base_year=BASE_YEAR):
+    for delta in delta2pos2preds:
+        pos2preds = delta2pos2preds[delta]
+        year = base_year - delta
+        for position in sorted(pos2preds):
+            print
+            print '=============== %s (%d) ==============' % (position, year)
+            print 'Predicted'
+            for i, pred in enumerate(pos2preds[position][:topN]):
+                print '% 3d' % (i + 1),
+                print '%s' % pos_rank_row_to_str(pred)
             print
 
 
@@ -85,7 +133,14 @@ def main():
     id2name = {ident[ID]: id_to_useful_name(ident[ID]) for ident in
                identifiers}
 
-    model = linear_model.LinearRegression()
+    #from sklearn import linear_model
+    from sklearn import ensemble
+    #from sklearn import svm
+    #model = linear_model.LinearRegression()
+    #model = linear_model.Lasso(max_iter=100000)
+    #model = ensemble.RandomForestRegressor()
+    model = ensemble.GradientBoostingRegressor()
+
     past_scores, past_predictions, current_predictions, current_ids = \
         predict_scores(matrix, identifiers, features, model)
 
@@ -96,6 +151,7 @@ def main():
         current_ids, current_predictions, id2name)
 
     compare_predictions(past_ranks, past_predicted_ranks)
+    dump_predictions(current_predicted_ranks)
 
     return
 
