@@ -1,10 +1,15 @@
+from collections import defaultdict
 from copy import copy
 from itertools import chain
 from logging import info
-import re
 
+from numpy import array
 from numpy import empty
 from numpy import nan
+from sklearn.preprocessing import Imputer
+
+ID = ('id', 'identifier')
+DELTA = ('delta', 'identifier')
 
 
 def score(row):
@@ -122,22 +127,23 @@ def split_player(features):
     fixed = [x[0] for x in FIXED_STATS]
     identifiers = [feat for feat in features if is_identifier(feat)]
 
-    base_row = {ident: features[ident] for ident in identifiers}
-    base_row.update({fix: features[fix] for fix in fixed})
+    base_row = {(ident, 'identifier'): features[ident]
+                for ident in identifiers}
+    base_row.update({(fix, None): features[fix] for fix in fixed})
     for delta in deltas:
         # map the row at xx_d to name xx_(d-delta) in the new vector
         new_deltas = [(d, d - delta) for d in deltas if d >= delta]
         if len(new_deltas) == 1:
             continue
         new_row = copy(base_row)
-        new_row['delta'] = delta
+        new_row[DELTA] = delta
 
         # At delta=1 we have the current age. Correct for the past.
-        new_row['age'] -= (delta - 1)
+        new_row[('age', None)] -= (delta - 1)
 
         for old_delta, new_delta in new_deltas:
             for feature in tracked_features:
-                key = '%s_%d' % (feature, new_delta)
+                key = (feature, new_delta)
                 new_row[key] = features[(feature, old_delta)]
         yield new_row
 
@@ -167,15 +173,8 @@ def construct_feature_matrix(id2year2stats):
     split_dicts = list(chain.from_iterable(split_player(features) for features
                                            in feature_dicts))
 
-    delta_rx = re.compile('^.*_[0-9]+$')
-
     def is_feature(feature_name):
-        # Strip off the delta
-        if delta_rx.match(feature_name):
-            reduced_name = "_".join(feature_name.split("_")[:-1])
-        else:
-            reduced_name = feature_name
-        return reduced_name in [x[0] for x in FIXED_STATS + TRACKED_STATS]
+        return feature_name[1] != 'identifier'
 
     keys = set(chain.from_iterable(split_dicts))
     feature_names = set(filter(is_feature, keys))
@@ -201,3 +200,54 @@ def construct_feature_matrix(id2year2stats):
             matrix[row, feature2col[feature]] = instance[feature]
 
     return matrix, identifiers, col2feature
+
+
+def predict_scores(matrix, identifiers, features, model):
+    """Use data from all year deltas > target_delta to predict scores."""
+    imputed_matrix = Imputer().fit_transform(matrix)
+
+    feature_cols = [idx for idx, (feat, delta) in enumerate(features)
+                    if delta != 0]
+
+    Y = imputed_matrix[:, features.index(('fantasy_points', 0))]
+    X = imputed_matrix[:, feature_cols]
+    model.fit(X, Y)
+    # This is the validation vector: the set of predictions we've made for past
+    # years based on the model
+    y_pred = model.predict(X)
+
+    # Now, take the delta=1 rows (containing all our data) and make delta=0
+    # rows by incrementing the delta indices for tracked stats and incrementing
+    # age. This will be used with the trained model to predict this year.
+    delta_1_indices = [idx for idx, ident in enumerate(identifiers)
+                       if ident[DELTA] == 1]
+    delta_1_rows = imputed_matrix[delta_1_indices, :]
+    delta_1_dicts = (dict(zip(features, row)) for row in delta_1_rows)
+
+    def shift_delta(feature_dict):
+        # This is necessary because we do not set up any xxx_0 features
+        # But, we select them when converting to rows, and then eliminate
+        # them when subselecting columns. It's a kludge; could be avoided
+        # by getting rid of the column subselect in this phase.
+        rv = defaultdict(lambda: nan)
+        for (feature, delta), value in feature_dict.iteritems():
+            if delta is None:
+                if feature == 'Age':
+                    rv[feature, delta] = value + 1
+                else:
+                    rv[feature, delta] = value
+            else:
+                rv[feature, delta + 1] = value
+        return rv
+
+    delta_0_dicts = (shift_delta(row) for row in delta_1_dicts)
+    delta_0_rows = [[row[feature] for feature in features] for row in
+                    delta_0_dicts]
+    delta_0_matrix = array(delta_0_rows)
+    current_year_predictions = model.predict(delta_0_matrix[:, feature_cols])
+    current_year_idents = []
+    for idx in delta_1_indices:
+        current_year_idents.append(copy(identifiers[idx]))
+        current_year_idents[-1][DELTA] = 0
+
+    return Y, y_pred, current_year_predictions, current_year_idents
