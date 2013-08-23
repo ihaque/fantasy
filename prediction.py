@@ -8,9 +8,8 @@ from numpy import empty
 from numpy import nan
 from sklearn.preprocessing import Imputer
 
-ID = ('id', 'identifier')
-DELTA = ('delta', 'identifier')
-
+from constants import DELTA
+from constants import ID
 
 def score(row):
     """(Approximate) scoring function for my league"""
