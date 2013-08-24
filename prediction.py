@@ -5,11 +5,16 @@ from logging import info
 
 from numpy import array
 from numpy import empty
+from numpy import mean
 from numpy import nan
+from sklearn.cross_validation import KFold
 from sklearn.preprocessing import Imputer
+from sklearn.preprocessing import StandardScaler
 
 from constants import DELTA
-from constants import ID
+from evaluation import compute_taus
+from evaluation import position_ranking_lists
+
 
 def score(row):
     """(Approximate) scoring function for my league"""
@@ -201,19 +206,61 @@ def construct_feature_matrix(id2year2stats):
     return matrix, identifiers, col2feature
 
 
-def predict_scores(matrix, identifiers, features, model):
+def cross_validate(matrix, identifiers, features, id2name, model, n_folds=3,
+                   seed=None):
     """Use data from all year deltas > target_delta to predict scores."""
-    imputed_matrix = Imputer().fit_transform(matrix)
-
     feature_cols = [idx for idx, (feat, delta) in enumerate(features)
                     if delta != 0]
+    objective_index = features.index(('fantasy_points', 0))
 
-    Y = imputed_matrix[:, features.index(('fantasy_points', 0))]
-    X = imputed_matrix[:, feature_cols]
-    model.fit(X, Y)
-    # This is the validation vector: the set of predictions we've made for past
-    # years based on the model
-    y_pred = model.predict(X)
+    def get_features_objective(_matrix):
+        X = _matrix[:, feature_cols]
+        y = _matrix[:, objective_index]
+        return X, y
+
+    taus_by_deltapos = {}
+    accum_test_identifiers = []
+    accum_test_scores = []
+    accum_test_preds = []
+    for fold, (train_index, test_index) in \
+            enumerate(KFold(n=matrix.shape[0], n_folds=n_folds, shuffle=True,
+                            random_state=seed)):
+        imputer = Imputer()
+        scaler = StandardScaler()
+        train_matrix = matrix[train_index, :]
+        test_matrix = matrix[test_index, :]
+        imputer.fit(train_matrix)
+        train_imputed = imputer.transform(train_matrix)
+        train_imputed = scaler.fit_transform(train_imputed)
+        test_imputed = scaler.transform(imputer.transform(test_matrix))
+
+        X_train, y_train = get_features_objective(train_imputed)
+        model.fit(X_train, y_train)
+        X_test, y_test = get_features_objective(test_imputed)
+        y_pred = model.predict(X_test)
+
+        test_identifiers = [identifiers[idx] for idx in test_index]
+        accum_test_identifiers.extend(test_identifiers)
+        accum_test_scores.extend(y_test)
+        accum_test_preds.extend(y_pred)
+
+    pos_ranks_true = position_ranking_lists(
+        accum_test_identifiers, accum_test_scores, id2name)
+    pos_ranks_pred = position_ranking_lists(
+        accum_test_identifiers, accum_test_preds, id2name)
+    taus = compute_taus(pos_ranks_true, pos_ranks_pred)
+    for deltapos, tauvals in taus.iteritems():
+        taus_by_deltapos.setdefault(deltapos, []).append(tauvals)
+    for deltapos in sorted(taus_by_deltapos, key=lambda x: (x[1], x[0])):
+        print deltapos, taus_by_deltapos[deltapos]
+
+    return
+
+
+predict_scores = None
+
+def predict_current_year(matrix, identifiers, features, id2name, model):
+    imputed_matrix = Imputer().fit_transform(matrix)
 
     # Now, take the delta=1 rows (containing all our data) and make delta=0
     # rows by incrementing the delta indices for tracked stats and incrementing

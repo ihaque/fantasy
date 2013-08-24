@@ -34,7 +34,22 @@ def kendall_tau(position_scores, position_predictions, topN=TOP_N):
     true_scores = get_scores(position_scores)
     pred_scores = get_scores(position_predictions)
 
+    if len(true_scores) < 2:
+        return (0, 0), frac_shared
+
     return kendalltau(true_scores, pred_scores), frac_shared
+
+
+def compute_taus(delta2pos2scores, delta2pos2preds):
+    taus = {}
+    for delta in delta2pos2scores:
+        pos2scores = delta2pos2scores[delta]
+        pos2preds = delta2pos2preds[delta]
+        for position in sorted(pos2scores):
+            (tau, pval), frac_shared = kendall_tau(pos2scores[position],
+                                                   pos2preds[position])
+            taus[delta, position] = (tau, pval, frac_shared)
+    return taus
 
 
 def position_ranking_lists(identifiers, scores, id2name):

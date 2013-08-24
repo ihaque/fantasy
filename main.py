@@ -1,6 +1,8 @@
 import logging
+from random import randint
 
 from constants import BASE_YEAR
+from constants import ID
 from constants import TOP_N
 from constants import SPECIAL_CASE_TRADES
 from evaluation import compare_predictions
@@ -8,8 +10,8 @@ from evaluation import pos_rank_row_to_str
 from evaluation import position_ranking_lists
 from parser import load_files
 from prediction import construct_feature_matrix
+from prediction import cross_validate
 from prediction import predict_scores
-from prediction import ID
 
 
 logging.getLogger().setLevel(logging.ERROR)
@@ -48,14 +50,29 @@ def main():
     id2name = {ident[ID]: id_to_useful_name(ident[ID]) for ident in
                identifiers}
 
-    #from sklearn import linear_model
+    from sklearn import linear_model
     from sklearn import ensemble
-    #from sklearn import svm
+    from sklearn import svm
     #model = linear_model.LinearRegression()
     #model = linear_model.Lasso(max_iter=100000)
-    #model = ensemble.RandomForestRegressor()
-    model = ensemble.GradientBoostingRegressor()
+    model = ensemble.RandomForestRegressor()
+    #model = ensemble.GradientBoostingRegressor()
 
+    seed = randint(0, 2**32 - 1)
+    for model in [linear_model.LinearRegression(),
+                  ensemble.RandomForestRegressor(),
+                  ensemble.ExtraTreesRegressor(),
+                  ensemble.AdaBoostRegressor(),
+                  ensemble.GradientBoostingRegressor(),
+                  svm.SVR(),
+                  svm.NuSVR(),
+                  ]:
+        print str(model).split('(')[0]
+        cross_validate(matrix, identifiers, features, id2name, model,
+                       n_folds=5, seed=seed)
+        print
+
+    return
     past_scores, past_predictions, current_predictions, current_ids = \
         predict_scores(matrix, identifiers, features, model)
 
