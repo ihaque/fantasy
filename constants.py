@@ -1,4 +1,4 @@
-TOP_N = 50
+TOP_N = 100
 BASE_YEAR = 2013
 
 # The logic should handle most trades properly, but in cases where there are

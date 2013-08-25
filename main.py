@@ -5,13 +5,12 @@ from constants import BASE_YEAR
 from constants import ID
 from constants import TOP_N
 from constants import SPECIAL_CASE_TRADES
-from evaluation import compare_predictions
 from evaluation import pos_rank_row_to_str
 from evaluation import position_ranking_lists
 from parser import load_files
 from prediction import construct_feature_matrix
 from prediction import cross_validate
-from prediction import predict_scores
+from prediction import predict_current_year
 
 
 logging.getLogger().setLevel(logging.ERROR)
@@ -46,6 +45,9 @@ def main():
         return (any_year['Name'], any_year['Tm'],
                 any_year['FantasyFantPos'])
 
+    current_players = set(id for id in id2year2stats if BASE_YEAR - 1 in
+                          id2year2stats[id])
+
     matrix, identifiers, features = construct_feature_matrix(id2year2stats)
     id2name = {ident[ID]: id_to_useful_name(ident[ID]) for ident in
                identifiers}
@@ -53,13 +55,10 @@ def main():
     from sklearn import linear_model
     from sklearn import ensemble
     from sklearn import svm
-    #model = linear_model.LinearRegression()
-    #model = linear_model.Lasso(max_iter=100000)
-    model = ensemble.RandomForestRegressor()
-    #model = ensemble.GradientBoostingRegressor()
 
     seed = randint(0, 2**32 - 1)
     for model in [linear_model.LinearRegression(),
+                  linear_model.Ridge(),
                   ensemble.RandomForestRegressor(),
                   ensemble.ExtraTreesRegressor(),
                   ensemble.AdaBoostRegressor(),
@@ -69,20 +68,21 @@ def main():
                   ]:
         print str(model).split('(')[0]
         cross_validate(matrix, identifiers, features, id2name, model,
-                       n_folds=5, seed=seed)
+                       n_folds=10, seed=seed)
         print
 
-    return
-    past_scores, past_predictions, current_predictions, current_ids = \
-        predict_scores(matrix, identifiers, features, model)
+    model = ensemble.RandomForestRegressor()
+    current_predictions, current_ids = \
+        predict_current_year(matrix, identifiers, features, id2name, model)
 
-    past_ranks = position_ranking_lists(identifiers, past_scores, id2name)
-    past_predicted_ranks = position_ranking_lists(
-        identifiers, past_predictions, id2name)
+    current_predictions, current_ids = zip(
+        *[(pred, ident) for pred, ident
+          in zip(current_predictions, current_ids)
+          if ident[ID] in current_players])
+
     current_predicted_ranks = position_ranking_lists(
         current_ids, current_predictions, id2name)
 
-    compare_predictions(past_ranks, past_predicted_ranks)
     dump_predictions(current_predicted_ranks)
 
     return
