@@ -1,8 +1,9 @@
 # Fantasy Football Draft Predictor
 
-** The results from this code are not very good. Treat it as an
+**The results from this code are not very good. Treat it as an
    interesting experiment, not as a legitimate source of fantasy
-   rankings.**
+   rankings. "Data Science" might be BS, I wouldn't even call this
+   that. Let's call it...data pseudoscience.**
 
 This code uses machine learning techniques to attempt to predict fantasy
 football performance of players based on their performance in past years.
