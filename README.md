@@ -2,7 +2,7 @@
 
 **The results from this code are not very good. Treat it as an
    interesting experiment, not as a legitimate source of fantasy
-   rankings. "Data Science" might be BS, I wouldn't even call this
+   rankings. "Data Science" might be BS, but I wouldn't even call this
    that. Let's call it...data pseudoscience.**
 
 This code uses machine learning techniques to attempt to predict fantasy
